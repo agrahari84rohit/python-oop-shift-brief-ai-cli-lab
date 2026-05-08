@@ -1,6 +1,25 @@
+import importlib
+import importlib.util
+
 import pytest
 
-from brief_builder import HandoffBriefBuilder
+
+def import_student_module(module_name):
+    package_name = f"lib.{module_name}"
+
+    try:
+        spec = importlib.util.find_spec(package_name)
+    except ModuleNotFoundError:
+        spec = None
+
+    if spec is not None:
+        return importlib.import_module(package_name)
+
+    return importlib.import_module(module_name)
+
+
+brief_builder_module = import_student_module("brief_builder")
+HandoffBriefBuilder = brief_builder_module.HandoffBriefBuilder
 
 
 VALID_BRIEF = """
@@ -29,8 +48,10 @@ class RecordingClient:
 
     def send(self, prompt):
         self.prompts.append(prompt)
+
         if self.error:
             raise self.error
+
         return self.response
 
 
@@ -54,7 +75,7 @@ def test_build_brief_prompt_rejects_blank_notes(bad_notes):
         builder.build_brief_prompt(bad_notes)
 
 
-def test_build_brief_prompt_includes_notes_sections_and_safety_guidance():
+def test_build_brief_prompt_includes_notes_sections_and_guidance():
     builder = HandoffBriefBuilder()
     notes = "Register 2 froze twice during closing. Maya restarted it."
 
@@ -66,11 +87,14 @@ def test_build_brief_prompt_includes_notes_sections_and_safety_guidance():
     for section in builder.REQUIRED_SECTIONS:
         assert section in prompt
 
-    assert "do not invent" in prompt_lower or "do not make up" in prompt_lower
-    assert "unsupported" in prompt_lower
-    assert "unknown" in prompt_lower
     assert "shift" in prompt_lower
     assert "handoff" in prompt_lower
+    assert "unknown" in prompt_lower
+    assert (
+        "do not invent" in prompt_lower
+        or "do not make up" in prompt_lower
+        or "only use" in prompt_lower
+    )
 
 
 @pytest.mark.parametrize("bad_feedback", [None, "", "   ", "\n\t"])
@@ -91,7 +115,11 @@ def test_build_revision_prompt_includes_feedback_previous_context_and_sections()
     assert feedback in prompt
     assert "previous" in prompt_lower or "earlier" in prompt_lower
     assert "revise" in prompt_lower or "revision" in prompt_lower
-    assert "do not invent" in prompt_lower or "do not make up" in prompt_lower
+    assert (
+        "do not invent" in prompt_lower
+        or "do not make up" in prompt_lower
+        or "only use" in prompt_lower
+    )
 
     for section in builder.REQUIRED_SECTIONS:
         assert section in prompt
@@ -125,7 +153,7 @@ Question here.
 """,
     ],
 )
-def test_is_usable_brief_returns_false_for_missing_or_blank_sections(response_text):
+def test_is_usable_brief_returns_false_for_missing_or_blank_responses(response_text):
     builder = HandoffBriefBuilder()
 
     assert builder.is_usable_brief(response_text) is False

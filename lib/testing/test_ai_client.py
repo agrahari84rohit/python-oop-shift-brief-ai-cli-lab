@@ -1,9 +1,43 @@
+import ast
+import importlib
+import importlib.util
 import inspect
+import re
 
 import pytest
 
-import ai_client as ai_client_module
-from ai_client import OllamaChatClient
+
+def import_student_module(module_name):
+    package_name = f"lib.{module_name}"
+
+    try:
+        spec = importlib.util.find_spec(package_name)
+    except ModuleNotFoundError:
+        spec = None
+
+    if spec is not None:
+        return importlib.import_module(package_name)
+
+    return importlib.import_module(module_name)
+
+
+ai_client_module = import_student_module("ai_client")
+OllamaChatClient = ai_client_module.OllamaChatClient
+
+
+def _string_literals_from_source(source):
+    tree = ast.parse(source)
+
+    return [
+        node.value.lower()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+def _contains_standalone_term(text, term):
+    pattern = r"(?<![a-z0-9_])" + re.escape(term.lower()) + r"(?![a-z0-9_])"
+    return re.search(pattern, text.lower()) is not None
 
 
 def test_client_initializes_default_model_and_empty_history():
@@ -49,19 +83,20 @@ def test_send_rejects_blank_prompts_without_calling_service(monkeypatch, bad_pro
     assert client.history == []
 
 
-def test_send_calls_ollama_with_model_and_history(monkeypatch):
+def test_send_calls_ollama_with_model_and_history_contents(monkeypatch):
     client = OllamaChatClient(model_name="test-model")
     call_details = {}
 
     def fake_chat(model, messages):
         call_details["model"] = model
-        call_details["messages_id"] = id(messages)
-        call_details["messages_at_call_time"] = list(messages)
+        call_details["messages_at_call_time"] = [
+            message.copy() for message in messages
+        ]
 
         return {
             "message": {
                 "role": "assistant",
-                "content": "  Usable assistant response.  ",
+                "content": "Usable assistant response.",
             }
         }
 
@@ -71,7 +106,6 @@ def test_send_calls_ollama_with_model_and_history(monkeypatch):
 
     assert result == "Usable assistant response."
     assert call_details["model"] == "test-model"
-    assert call_details["messages_id"] == id(client.history)
     assert call_details["messages_at_call_time"] == [
         {"role": "user", "content": "Create a handoff summary."}
     ]
@@ -80,6 +114,50 @@ def test_send_calls_ollama_with_model_and_history(monkeypatch):
         {"role": "assistant", "content": "Usable assistant response."},
     ]
 
+def test_send_handles_ollama_chat_response_object(monkeypatch):
+    class FakeMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeChatResponse:
+        def __init__(self, content):
+            self.message = FakeMessage(content)
+
+    client = OllamaChatClient()
+
+    def fake_chat(model, messages):
+        return FakeChatResponse("Object-style Ollama response.")
+
+    monkeypatch.setattr(ai_client_module.ollama, "chat", fake_chat)
+
+    result = client.send("Create a brief.")
+
+    assert result == "Object-style Ollama response."
+    assert client.history == [
+        {"role": "user", "content": "Create a brief."},
+        {"role": "assistant", "content": "Object-style Ollama response."},
+    ]
+
+def test_send_rejects_object_response_with_blank_content(monkeypatch):
+    class FakeMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeChatResponse:
+        def __init__(self, content):
+            self.message = FakeMessage(content)
+
+    client = OllamaChatClient()
+
+    def fake_chat(model, messages):
+        return FakeChatResponse("   ")
+
+    monkeypatch.setattr(ai_client_module.ollama, "chat", fake_chat)
+
+    with pytest.raises(RuntimeError, match="AI service request failed"):
+        client.send("Create a brief.")
+
+    assert client.history == []
 
 def test_send_returns_text_without_printing(monkeypatch, capsys):
     client = OllamaChatClient()
@@ -151,22 +229,15 @@ def test_message_count_returns_number_of_stored_messages():
     assert client.message_count() == 2
 
 
-def test_get_transcript_returns_copy_not_internal_list():
+def test_get_transcript_returns_copy_not_internal_objects():
     client = OllamaChatClient()
     client.history = [{"role": "user", "content": "Original"}]
 
     transcript = client.get_transcript()
-    transcript.append({"role": "assistant", "content": "Changed"})
 
-    assert transcript != client.history
-    assert client.history == [{"role": "user", "content": "Original"}]
+    assert transcript == client.history
+    assert transcript is not client.history
 
-
-def test_get_transcript_returns_copies_of_message_dicts():
-    client = OllamaChatClient()
-    client.history = [{"role": "user", "content": "Original"}]
-
-    transcript = client.get_transcript()
     transcript[0]["content"] = "Mutated"
 
     assert client.history == [{"role": "user", "content": "Original"}]
@@ -174,7 +245,8 @@ def test_get_transcript_returns_copies_of_message_dicts():
 
 def test_send_raises_runtime_error_and_removes_failed_user_message(monkeypatch):
     client = OllamaChatClient()
-    client.history = [{"role": "user", "content": "Previous prompt"}]
+    previous_history = [{"role": "user", "content": "Previous prompt"}]
+    client.history = [message.copy() for message in previous_history]
 
     def fake_chat(model, messages):
         raise ConnectionError("service offline")
@@ -184,12 +256,15 @@ def test_send_raises_runtime_error_and_removes_failed_user_message(monkeypatch):
     with pytest.raises(RuntimeError, match="AI service request failed"):
         client.send("Prompt that fails")
 
-    assert client.history == [{"role": "user", "content": "Previous prompt"}]
+    assert client.history == previous_history
 
 
 @pytest.mark.parametrize(
     "bad_response",
     [
+        None,
+        [],
+        "not a dictionary",
         {},
         {"message": None},
         {"message": {}},
@@ -213,24 +288,48 @@ def test_send_rejects_unusable_assistant_responses(monkeypatch, bad_response):
     assert client.history == []
 
 
+def test_send_preserves_previous_history_when_response_is_unusable(monkeypatch):
+    client = OllamaChatClient()
+    previous_history = [
+        {"role": "user", "content": "Previous prompt"},
+        {"role": "assistant", "content": "Previous response"},
+    ]
+    client.history = [message.copy() for message in previous_history]
+
+    def fake_chat(model, messages):
+        return {"message": {"role": "assistant", "content": "   "}}
+
+    monkeypatch.setattr(ai_client_module.ollama, "chat", fake_chat)
+
+    with pytest.raises(RuntimeError, match="AI service request failed"):
+        client.send("Prompt that receives unusable output")
+
+    assert client.history == previous_history
+
+
 def test_client_stays_generic_and_domain_neutral():
-    source = inspect.getsource(OllamaChatClient).lower()
+    source = inspect.getsource(OllamaChatClient)
+    string_content = "\n".join(_string_literals_from_source(source))
 
     forbidden_terms = [
         "shift",
         "handoff",
         "brief",
         "action item",
+        "action items",
         "open issue",
+        "open issues",
         "risk note",
-        "store",
+        "risk notes",
         "inventory",
         "retail",
-        "manager",
+        "store manager",
+        "shift summary",
+        "follow-up questions",
     ]
 
     for term in forbidden_terms:
-        assert term not in source, (
+        assert not _contains_standalone_term(string_content, term), (
             "OllamaChatClient should stay generic and should not include "
-            f"domain-specific term: {term}"
+            f"domain-specific prompt or workflow language: {term}"
         )

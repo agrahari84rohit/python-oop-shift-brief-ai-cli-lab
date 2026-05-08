@@ -1,10 +1,28 @@
+import ast
+import importlib
+import importlib.util
 import inspect
 
 import pytest
 
-import brief_builder as brief_builder_module
-import shift_cli as shift_cli_module
-from shift_cli import ShiftBriefCLI
+
+def import_student_module(module_name):
+    package_name = f"lib.{module_name}"
+
+    try:
+        spec = importlib.util.find_spec(package_name)
+    except ModuleNotFoundError:
+        spec = None
+
+    if spec is not None:
+        return importlib.import_module(package_name)
+
+    return importlib.import_module(module_name)
+
+
+brief_builder_module = import_student_module("brief_builder")
+shift_cli_module = import_student_module("shift_cli")
+ShiftBriefCLI = shift_cli_module.ShiftBriefCLI
 
 
 class FakeClient:
@@ -28,15 +46,65 @@ class FakeBuilder:
 
     def create_brief(self, ai_client, notes):
         self.created_notes.append(notes)
+
         if self.error:
             raise self.error
+
         return "\nShift Handoff Brief\nAction Items:\nFollow up with IT."
 
     def revise_brief(self, ai_client, feedback):
         self.revision_feedback.append(feedback)
+
         if self.error:
             raise self.error
+
         return "\nRevised Shift Handoff Brief\nAction Items:\nAsk IT to review Register 2."
+
+
+def _imports_ollama(source):
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "ollama" or alias.name.startswith("ollama."):
+                    return True
+
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "ollama" or (
+                node.module and node.module.startswith("ollama.")
+            ):
+                return True
+
+    return False
+
+
+def _calls_ollama_chat(source):
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "chat"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "ollama"
+            ):
+                return True
+
+    return False
+
+
+def _uses_history_attribute(source):
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "history":
+            return True
+
+    return False
 
 
 def test_cli_initializes_with_injected_client_and_optional_builder():
@@ -171,6 +239,20 @@ def test_handle_command_brief_sends_payload_to_builder():
     assert "Shift Handoff Brief" in result
 
 
+def test_handle_command_brief_is_case_insensitive():
+    builder = FakeBuilder()
+    app = ShiftBriefCLI(FakeClient(), builder)
+
+    result = app.handle_command(
+        "  BRIEF   Register 2 froze during closing and needs IT review."
+    )
+
+    assert builder.created_notes == [
+        "Register 2 froze during closing and needs IT review."
+    ]
+    assert "Shift Handoff Brief" in result
+
+
 @pytest.mark.parametrize("command", ["revise", "revise   "])
 def test_handle_command_revise_without_feedback_returns_input_error(command):
     builder = FakeBuilder()
@@ -188,6 +270,16 @@ def test_handle_command_revise_sends_feedback_to_builder():
     app = ShiftBriefCLI(FakeClient(), builder)
 
     result = app.handle_command("revise Make the action items more specific.")
+
+    assert builder.revision_feedback == ["Make the action items more specific."]
+    assert "Revised Shift Handoff Brief" in result
+
+
+def test_handle_command_revise_is_case_insensitive():
+    builder = FakeBuilder()
+    app = ShiftBriefCLI(FakeClient(), builder)
+
+    result = app.handle_command("  REVISE   Make the action items more specific.")
 
     assert builder.revision_feedback == ["Make the action items more specific."]
     assert "Revised Shift Handoff Brief" in result
@@ -214,19 +306,20 @@ def test_handle_command_returns_input_error_when_builder_raises_value_error():
 
 
 def test_shift_cli_and_brief_builder_do_not_import_ollama_or_call_chat_directly():
-    shift_source = inspect.getsource(shift_cli_module).lower()
-    builder_source = inspect.getsource(brief_builder_module).lower()
+    shift_source = inspect.getsource(shift_cli_module)
+    builder_source = inspect.getsource(brief_builder_module)
 
-    assert "import ollama" not in shift_source
-    assert "ollama.chat" not in shift_source
-    assert "import ollama" not in builder_source
-    assert "ollama.chat" not in builder_source
+    assert not _imports_ollama(shift_source)
+    assert not _calls_ollama_chat(shift_source)
+
+    assert not _imports_ollama(builder_source)
+    assert not _calls_ollama_chat(builder_source)
 
 
 def test_cli_does_not_manage_ai_client_history_directly():
-    source = inspect.getsource(ShiftBriefCLI).lower()
+    source = inspect.getsource(ShiftBriefCLI)
 
-    assert ".history" not in source
+    assert not _uses_history_attribute(source)
 
 
 def test_main_function_exists():
