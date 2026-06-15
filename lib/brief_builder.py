@@ -10,91 +10,65 @@ class HandoffBriefBuilder:
     )
 
     def build_brief_prompt(self, notes):
-        """
-        Build a prompt for creating a new shift handoff brief.
+        """Build a prompt for creating a new shift handoff brief."""
+        if notes is None or not isinstance(notes, str) or not notes.strip():
+            raise ValueError("Shift notes cannot be empty")
 
-        Requirements:
-        - Reject None, empty, or whitespace-only notes with ValueError.
-        - Include the original shift notes in the prompt.
-        - Include every required section label from REQUIRED_SECTIONS.
-        - Tell the model not to invent unsupported details.
-        - Tell the model to use "Unknown" when details are not provided.
-        - Keep this domain-specific prompt logic in this builder class,
-          not in the reusable AI client.
-        """
-        # TODO: Validate notes.
-        # TODO: Build and return a prompt for a new handoff brief.
-        pass
+        cleaned_notes = notes.strip()
+        sections = "\n".join(self.REQUIRED_SECTIONS)
+
+        return (
+            "Create a concise shift handoff brief from the following notes. "
+            "Use the required sections below and do not invent unsupported details. "
+            "If something is not provided, write 'Unknown'.\n\n"
+            f"Shift Notes:\n{cleaned_notes}\n\n"
+            f"Required sections:\n{sections}\n"
+        )
 
     def build_revision_prompt(self, feedback):
-        """
-        Build a prompt for revising the previous handoff brief.
+        """Build a prompt for revising the previous handoff brief."""
+        if feedback is None or not isinstance(feedback, str) or not feedback.strip():
+            raise ValueError("Revision feedback cannot be empty")
 
-        Requirements:
-        - Reject None, empty, or whitespace-only feedback with ValueError.
-        - Reference the previous brief or earlier conversation.
-        - Include the manager's revision feedback.
-        - Include every required section label from REQUIRED_SECTIONS.
-        - Tell the model not to invent unsupported details.
-        """
-        # TODO: Validate feedback.
-        # TODO: Build and return a revision prompt.
-        pass
+        sections = "\n".join(self.REQUIRED_SECTIONS)
+
+        return (
+            "Revise the previous handoff brief using the manager feedback below. "
+            "Reference the earlier conversation context and keep the response in the same structure. "
+            "Do not invent unsupported details or add facts that are not present in the notes. "
+            "If any detail is missing, use 'Unknown'.\n\n"
+            f"Manager Feedback:\n{feedback.strip()}\n\n"
+            f"Required sections:\n{sections}\n"
+        )
 
     def is_usable_brief(self, response_text):
-        """
-        Check whether the AI response includes the required handoff structure.
+        """Check whether the AI response contains the required handoff sections."""
+        if response_text is None or not isinstance(response_text, str) or not response_text.strip():
+            return False
 
-        Requirements:
-        - Return False for None, empty, or whitespace-only responses.
-        - Return True only when the response contains every required section label.
-        - Return False if one or more required sections are missing.
-        """
-        # TODO: Check whether response_text contains all required sections.
-        pass
+        text = response_text.strip()
+        return all(section in text for section in self.REQUIRED_SECTIONS)
 
     def format_brief(self, response_text):
-        """
-        Format a created handoff brief for display.
-
-        Requirements:
-        - Return a string.
-        - Add a clear user-facing heading before the response text.
-        - Preserve the AI response content.
-        """
-        # TODO: Return a formatted created-brief string.
-        pass
+        """Format a created handoff brief for display."""
+        return f"\nShift Handoff Brief\n{response_text.strip()}"
 
     def create_brief(self, ai_client, notes):
-        """
-        Create a new handoff brief.
+        """Create a new handoff brief using the AI client."""
+        prompt = self.build_brief_prompt(notes)
+        response_text = ai_client.send(prompt)
 
-        Requirements:
-        - Build a prompt from the shift notes.
-        - Send the prompt through ai_client.send().
-        - Verify that the AI response includes the required sections.
-        - Raise RuntimeError if the AI response is not usable.
-        - Return a formatted user-facing brief.
-        """
-        # TODO: Build the prompt.
-        # TODO: Send the prompt through the AI client.
-        # TODO: Verify the response structure.
-        # TODO: Return the formatted brief.
-        pass
+        if not self.is_usable_brief(response_text):
+            raise RuntimeError("AI response did not include required sections")
+
+        return self.format_brief(response_text)
 
     def revise_brief(self, ai_client, feedback):
-        """
-        Revise the previous handoff brief.
+        """Revise a previous handoff brief using the AI client."""
+        prompt = self.build_revision_prompt(feedback)
+        response_text = ai_client.send(prompt)
 
-        Requirements:
-        - Build a revision prompt from the feedback.
-        - Send the prompt through ai_client.send().
-        - Verify that the AI response includes the required sections.
-        - Raise RuntimeError if the AI response is not usable.
-        - Return a formatted user-facing revised brief.
-        """
-        # TODO: Build the revision prompt.
-        # TODO: Send the prompt through the AI client.
-        # TODO: Verify the response structure.
-        # TODO: Return the formatted revised brief.
-        pass
+        if not self.is_usable_brief(response_text):
+            raise RuntimeError("AI response did not include required sections")
+
+        return f"\nRevised Shift Handoff Brief\n{response_text.strip()}"
